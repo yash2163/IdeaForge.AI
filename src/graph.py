@@ -1,52 +1,67 @@
 from langgraph.graph import StateGraph, END
-from src.models import BattleState
+from src.models import BattleState, BusinessIdea
 from src.agents import generate_node, roast_node
 
-def should_continue(state: BattleState):
-    idea = state.current_idea
-    if idea.iteration_count >= state.max_iterations:
-        return END
-    return "roast"
+def battle_router(state: BattleState):
+    config = state.config
+    
+    # Check if current idea needs more refinement
+    if state.current_iteration < config.max_iterations:
+        return "refine"
+    
+    # If Idea is done (max iterations reached)
+    else:
+        # Check if we have more Rounds (new ideas) to play
+        if state.current_round < config.max_rounds:
+            return "new_round"
+        else:
+            return "end_game"
+
+def save_and_reset(state: BattleState):
+    """Node that saves the finished idea and resets counters for next round"""
+    finished_idea = state.current_idea
+    print(f"✅ Idea Finalized: {finished_idea.title} (Score: {finished_idea.score_overall:.1f})")
+    
+    return {
+        "completed_ideas": [finished_idea], # Appends to list
+        "current_round": state.current_round + 1,
+        "current_iteration": 0, # Reset for next idea
+        "current_idea": None
+    }
 
 def build_graph():
     workflow = StateGraph(BattleState)
     
-    # Add Nodes
     workflow.add_node("generate", generate_node)
     workflow.add_node("roast", roast_node)
+    workflow.add_node("save_idea", save_and_reset)
     
-    # Set Entry Point
     workflow.set_entry_point("generate")
     
-    # Add Edges
-    # After generating, go to roast
     workflow.add_edge("generate", "roast")
     
-    # After roasting, check if we need to refine (loop back) or end
     workflow.add_conditional_edges(
         "roast",
-        should_continue,
+        battle_router,
         {
-            "roast": "generate", # Actually, if we continue, we go back to generate to fix it
-            END: END
+            "refine": "generate",      # Go back to fix current idea
+            "new_round": "save_idea",  # Save and start fresh
+            "end_game": "save_idea"    # Save and finish
         }
     )
     
-    # Correction on logic above: 
-    # If should_continue returns "roast" (meaning continue), we actually want to point to "generate".
-    # Let's fix the Conditional Logic mapping:
-    
-    def router(state: BattleState):
-        if state.current_idea.iteration_count >= state.max_iterations:
-            return "end"
-        return "refine"
+    # After saving, check if we really ended or just started a new round
+    def post_save_router(state: BattleState):
+        if state.current_round > state.config.max_rounds:
+            return END
+        return "generate"
 
     workflow.add_conditional_edges(
-        "roast",
-        router,
+        "save_idea",
+        post_save_router,
         {
-            "refine": "generate",
-            "end": END
+            "generate": "generate",
+            END: END
         }
     )
     

@@ -1,36 +1,52 @@
 from src.graph import build_graph
-from src.models import BattleState
+from src.models import BattleState, BattleConfig
+import pandas as pd
 
 def main():
-    print("🥊 Starting the Business Battle Arena (Phase 1 Test)...")
+    print("🥊 IdeaForge.AI: Phase 2 Test")
+    print("=============================")
     
-    # Inputs
-    niche_input = "AI Agents for Legal Contracts"
-    iterations_input = 2 # Will generate -> roast -> refine -> roast -> end
+    # Configuration
+    niche = "AI Tools for Construction Industry"
+    rounds = 2        # We want 2 distinct ideas
+    iterations = 2    # Each idea gets 1 refine loop (Gen -> Roast -> Refine -> Roast)
     
-    # Initialize State
-    initial_state = BattleState(niche=niche_input, max_iterations=iterations_input)
+    config = BattleConfig(niche=niche, max_rounds=rounds, max_iterations=iterations)
+    initial_state = BattleState(config=config)
     
-    # Run Graph
+    # Execution
     app = build_graph()
     result = app.invoke(initial_state)
     
-    # Display Result
-    final_idea = result["current_idea"]
-    print("\n" + "="*40)
-    print(f"🏆 FINAL RESULT for '{niche_input}'")
-    print("="*40)
-    print(f"Title: {final_idea.title}")
-    print(f"Description: {final_idea.description}")
-    print(f"Scores -> Feasibility: {final_idea.score_feasibility}/10 | Moat: {final_idea.score_moat}/10")
-    print(f"Overall Score: {final_idea.score_overall}")
-    print(f"Last Critique: {final_idea.critique}")
-    print("="*40)
+    # ---------------- LEADERBOARD DISPLAY ----------------
+    print("\n🏆 FINAL LEADERBOARD")
+    print("====================")
     
-    # Show History
-    print("\n📜 Execution Log:")
-    for msg in result['messages']:
-        print(f"- {msg}")
+    ideas = result['completed_ideas']
+    
+    # Sort by Overall Score (Descending)
+    ideas.sort(key=lambda x: x.score_overall, reverse=True)
+    
+    # Create simple dataframe for view
+    data = []
+    for i, idea in enumerate(ideas):
+        data.append([
+            i+1, 
+            idea.title, 
+            f"{idea.score_overall:.1f}", 
+            idea.score_feasibility, 
+            idea.score_moat, 
+            idea.score_market
+        ])
+        
+    df = pd.DataFrame(data, columns=["Rank", "Title", "Overall", "Feas.", "Moat", "Mkt"])
+    print(df.to_string(index=False))
+    
+    print("\n📝 Top Idea Details:")
+    top_idea = ideas[0]
+    print(f"Title: {top_idea.title}")
+    print(f"Pitch: {top_idea.description}")
+    print(f"Killer Constraint (Moat): {top_idea.score_moat}/10")
 
 if __name__ == "__main__":
     main()
