@@ -2,62 +2,80 @@ import streamlit as st
 import pandas as pd
 from src.graph import build_graph
 from src.models import BattleState, BattleConfig
+import src.database as db  # Import the new DB module
 
-# Page Config
+# --- SETUP ---
 st.set_page_config(page_title="IdeaForge.AI", page_icon="🥊", layout="wide")
+db.init_db()  # Initialize DB on app start
 
-# Title
-st.title("🥊 IdeaForge.AI")
+st.title("💡 IdeaForge.AI")
 st.markdown("### The Autonomous Business Idea Arena")
 
-# --- SIDEBAR: CONTROLS ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Battle Config")
+    st.header("⚙️ New Battle")
     niche_input = st.text_input("Target Niche", "AI Agents for Healthcare")
-    rounds_input = st.slider("Number of Rounds (Distinct Ideas)", 1, 5, 2)
-    iterations_input = st.slider("Iterations per Idea (Refinements)", 1, 5, 2)
+    rounds_input = st.slider("Number of Rounds", 1, 5, 2)
+    iterations_input = st.slider("Iterations per Idea", 1, 5, 2)
     
-    start_btn = st.button("🚀 Start Battle", type="primary")
+    if st.button("🚀 Start Battle", type="primary"):
+        st.session_state.run_battle = True
+        st.session_state.view_mode = "live"
 
-# --- SESSION STATE ---
-if "battle_results" not in st.session_state:
-    st.session_state.battle_results = None
+    st.divider()
+    
+    # --- HISTORY SECTION ---
+    st.header("📜 Past Battles")
+    past_sessions = db.get_all_sessions()
+    
+    if not past_sessions:
+        st.info("No battles yet.")
+    else:
+        for s_id, s_niche, s_time in past_sessions:
+            # Create a button for each past session
+            label = f"{s_niche} ({s_time})"
+            if st.button(label, key=f"hist_{s_id}"):
+                st.session_state.view_mode = "history"
+                st.session_state.selected_session_id = s_id
+                st.rerun() # Refresh to show history
 
-# --- BATTLE LOGIC ---
-if start_btn:
-    with st.spinner("🤖 Agents are fighting... (This may take a moment)"):
-        # 1. Init Config
-        config = BattleConfig(
-            niche=niche_input, 
-            max_rounds=rounds_input, 
-            max_iterations=iterations_input
-        )
+# --- MAIN LOGIC ---
+
+# 1. RUN NEW BATTLE
+if st.session_state.get("run_battle"):
+    st.session_state.run_battle = False # Reset trigger
+    
+    with st.spinner("🤖 Agents are fighting..."):
+        config = BattleConfig(niche=niche_input, max_rounds=rounds_input, max_iterations=iterations_input)
         initial_state = BattleState(config=config)
         
-        # 2. Run Graph
         app = build_graph()
         result = app.invoke(initial_state)
         
-        # 3. Store Results
-        st.session_state.battle_results = result
-        st.success("Battle Complete!")
+        # SAVE TO DB
+        db.save_battle(niche_input, result['completed_ideas'])
+        
+        # Update Session State for Display
+        st.session_state.display_ideas = result['completed_ideas']
+        st.success("Battle Complete & Saved!")
 
-# --- RESULTS DISPLAY ---
-if st.session_state.battle_results:
-    results = st.session_state.battle_results
+# 2. LOAD HISTORY
+if st.session_state.get("view_mode") == "history":
+    s_id = st.session_state.get("selected_session_id")
+    st.session_state.display_ideas = db.get_session_ideas(s_id)
+    st.info(f"Viewing Historical Data: Session #{s_id}")
+
+# --- DISPLAY LOGIC (Common for both Live and History) ---
+if "display_ideas" in st.session_state:
+    final_ideas = st.session_state.display_ideas
     
-    # 1. LEADERBOARD (Top Section)
+    # A. Leaderboard
     st.divider()
     st.subheader("🏆 Leaderboard")
     
-    final_ideas = results['completed_ideas']
-    
-    # Prepare Dataframe
     data = []
     for idea in final_ideas:
         data.append({
-            "Rank": 0, # Placeholder
-            "Round": idea.round_id,
             "Title": idea.title,
             "Overall Score": f"{idea.score_overall:.1f}",
             "Feasibility": idea.score_feasibility,
@@ -69,51 +87,17 @@ if st.session_state.battle_results:
     df = pd.DataFrame(data)
     if not df.empty:
         df = df.sort_values(by="Overall Score", ascending=False)
-        df["Rank"] = range(1, len(df) + 1)
-        st.dataframe(
-            df, 
-            column_config={
-                "Overall Score": st.column_config.ProgressColumn(
-                    "Overall Score", format="%.1f", min_value=0, max_value=10
-                ),
-            },
-            hide_index=True,
-            use_container_width=True
-        )
+        st.dataframe(df, use_container_width=True)
 
-    # 2. DETAILED BATTLE TIMELINE (Bottom Section)
+    # B. Details (Simple view for now, as history usually just stores the final state)
     st.divider()
-    st.subheader("📜 Battle Timeline (All Rounds & Iterations)")
+    st.subheader("📝 Idea Details")
     
-    all_history = results['all_iterations']
-    
-    # Group by Round
-    round_groups = {}
-    for item in all_history:
-        r_id = item.round_id
-        if r_id not in round_groups:
-            round_groups[r_id] = []
-        round_groups[r_id].append(item)
-    
-    # Create Tabs for each Round
-    round_tabs = st.tabs([f"Round {r}" for r in sorted(round_groups.keys())])
-    
-    for i, tab in enumerate(round_tabs):
-        round_num = i + 1
-        round_data = round_groups.get(round_num, [])
-        
-        with tab:
-            for iteration in round_data:
-                # Expander for each iteration
-                with st.expander(f"Iter {iteration.iteration_count}: {iteration.title} (Score: {iteration.score_overall:.1f})", expanded=False):
-                    col1, col2 = st.columns([2, 1])
-                    
-                    with col1:
-                        st.markdown(f"**Description:** {iteration.description}")
-                        st.markdown(f"**🔥 Roast / Critique:**")
-                        st.info(iteration.critique)
-                    
-                    with col2:
-                        st.metric("Feasibility", f"{iteration.score_feasibility}/10")
-                        st.metric("Moat", f"{iteration.score_moat}/10")
-                        st.metric("Market", f"{iteration.score_market}/10")
+    for idea in final_ideas:
+        with st.expander(f"{idea.title} (Score: {idea.score_overall:.1f})"):
+            st.write(f"**Pitch:** {idea.description}")
+            st.write(f"**Latest Critique:** {idea.critique}")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Feasibility", idea.score_feasibility)
+            col2.metric("Moat", idea.score_moat)
+            col3.metric("Market", idea.score_market)
