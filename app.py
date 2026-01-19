@@ -1,103 +1,126 @@
 import streamlit as st
 import pandas as pd
-from src.graph import build_graph
-from src.models import BattleState, BattleConfig
-import src.database as db  # Import the new DB module
+import src.database as db
+from src.simulation_mode import run_simulation_mode
+from src.gladiator_mode import run_gladiator_mode
+from src.report_generator import generate_csv_report
 
 # --- SETUP ---
-st.set_page_config(page_title="IdeaForge.AI", page_icon="🥊", layout="wide")
-db.init_db()  # Initialize DB on app start
+st.set_page_config(page_title="IdeaForge.AI", page_icon="⚔️", layout="wide")
+db.init_db()
 
-st.title("💡 IdeaForge.AI")
-st.markdown("### The Autonomous Business Idea Arena")
+# Custom CSS
+st.markdown("""<style>.main-header { font-size: 2.5rem; color: #FF4B4B; font-weight: 800; }</style>""", unsafe_allow_html=True)
+st.markdown('<div class="main-header">⚔️ IdeaForge.AI</div>', unsafe_allow_html=True)
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ New Battle")
-    niche_input = st.text_input("Target Niche", "AI Agents for Healthcare")
-    rounds_input = st.slider("Number of Rounds", 1, 5, 2)
-    iterations_input = st.slider("Iterations per Idea", 1, 5, 2)
+    st.header("🎮 Game Mode")
+    # We use a Session State variable to track the active mode so it persists
+    if "app_mode" not in st.session_state:
+        st.session_state.app_mode = "Spectator (AI vs AI)"
     
-    if st.button("🚀 Start Battle", type="primary"):
-        st.session_state.run_battle = True
+    # Mode Selector
+    selected_mode = st.radio(
+        "Select Mode", 
+        ["Spectator (AI vs AI)", "Gladiator (You vs AI)"],
+        index=0 if st.session_state.app_mode == "Spectator (AI vs AI)" else 1
+    )
+    
+    # If mode changes, reset view to "Live"
+    if selected_mode != st.session_state.app_mode:
+        st.session_state.app_mode = selected_mode
         st.session_state.view_mode = "live"
+        st.rerun()
 
     st.divider()
     
-    # --- HISTORY SECTION ---
-    st.header("📜 Past Battles")
-    past_sessions = db.get_all_sessions()
+    # --- GLOBAL SETTINGS ---
+    if st.session_state.app_mode == "Spectator (AI vs AI)":
+        st.header("⚙️ Simulation Config")
+    else:
+        st.header("⚙️ Gladiator Config")
+        
+    niche_input = st.text_input("Target Niche", "AI for Education")
+
+    st.divider()
+
+    # --- HISTORY SECTION (FILTERED) ---
+    st.header("📜 Battle History")
+    
+    # Determine the tag based on current mode so we show relevant history only
+    current_mode_tag = "Spectator" if st.session_state.app_mode == "Spectator (AI vs AI)" else "Gladiator"
+    
+    # Fetch filtered sessions using the new DB function
+    past_sessions = db.get_sessions_by_mode(current_mode_tag)
     
     if not past_sessions:
-        st.info("No battles yet.")
+        st.caption(f"No {current_mode_tag} battles recorded yet.")
     else:
         for s_id, s_niche, s_time in past_sessions:
-            # Create a button for each past session
-            label = f"{s_niche} ({s_time})"
-            if st.button(label, key=f"hist_{s_id}"):
+            # Clean up timestamp for display
+            short_time = s_time.split(" ")[0] 
+            label = f"#{s_id} {s_niche}"
+            
+            if st.button(label, key=f"hist_{s_id}", use_container_width=True):
                 st.session_state.view_mode = "history"
                 st.session_state.selected_session_id = s_id
-                st.rerun() # Refresh to show history
+                st.session_state.selected_session_name = s_niche
+                st.rerun()
+                
+    if st.button("⬅️ Back to Live Game", use_container_width=True):
+        st.session_state.view_mode = "live"
+        st.rerun()
 
-# --- MAIN LOGIC ---
+# ==========================================
+# MAIN ROUTER LOGIC
+# ==========================================
 
-# 1. RUN NEW BATTLE
-if st.session_state.get("run_battle"):
-    st.session_state.run_battle = False # Reset trigger
-    
-    with st.spinner("🤖 Agents are fighting..."):
-        config = BattleConfig(niche=niche_input, max_rounds=rounds_input, max_iterations=iterations_input)
-        initial_state = BattleState(config=config)
-        
-        app = build_graph()
-        result = app.invoke(initial_state)
-        
-        # SAVE TO DB
-        db.save_battle(niche_input, result['completed_ideas'])
-        
-        # Update Session State for Display
-        st.session_state.display_ideas = result['completed_ideas']
-        st.success("Battle Complete & Saved!")
-
-# 2. LOAD HISTORY
+# CASE 1: HISTORY VIEW
 if st.session_state.get("view_mode") == "history":
     s_id = st.session_state.get("selected_session_id")
-    st.session_state.display_ideas = db.get_session_ideas(s_id)
-    st.info(f"Viewing Historical Data: Session #{s_id}")
+    s_name = st.session_state.get("selected_session_name")
+    
+    st.info(f"📂 Viewing Archived Session #{s_id}: {s_name}")
+    
+    # Load Data
+    history_ideas = db.get_session_ideas(s_id)
+    
+    if history_ideas:
+        # 1. Download Button
+        csv_data = generate_csv_report(history_ideas)
+        st.download_button("📥 Download This Report", csv_data, "history_report.csv", "text/csv")
+        
+        # 2. Leaderboard
+        st.subheader("🏆 Final Standings")
+        data = []
+        for idea in history_ideas:
+            data.append({
+                "Title": idea.title,
+                "Score": f"{idea.score_overall:.1f}",
+                "Feasibility": idea.score_feasibility,
+                "Moat": idea.score_moat,
+                "Market": idea.score_market,
+                "Pitch": idea.description
+            })
+        st.dataframe(pd.DataFrame(data), use_container_width=True)
+        
+        # 3. Details
+        st.markdown("### 📝 Detailed Records")
+        for idea in history_ideas:
+            with st.expander(f"{idea.title} (Score: {idea.score_overall:.1f})"):
+                st.write(f"**Pitch:** {idea.description}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.info(f"**Research:**\n{idea.market_research}")
+                with col2:
+                    st.warning(f"**Critique:**\n{idea.critique}")
 
-# --- DISPLAY LOGIC (Common for both Live and History) ---
-if "display_ideas" in st.session_state:
-    final_ideas = st.session_state.display_ideas
-    
-    # A. Leaderboard
-    st.divider()
-    st.subheader("🏆 Leaderboard")
-    
-    data = []
-    for idea in final_ideas:
-        data.append({
-            "Title": idea.title,
-            "Overall Score": f"{idea.score_overall:.1f}",
-            "Feasibility": idea.score_feasibility,
-            "Moat": idea.score_moat,
-            "Market": idea.score_market,
-            "Elevator Pitch": idea.description
-        })
-    
-    df = pd.DataFrame(data)
-    if not df.empty:
-        df = df.sort_values(by="Overall Score", ascending=False)
-        st.dataframe(df, use_container_width=True)
-
-    # B. Details (Simple view for now, as history usually just stores the final state)
-    st.divider()
-    st.subheader("📝 Idea Details")
-    
-    for idea in final_ideas:
-        with st.expander(f"{idea.title} (Score: {idea.score_overall:.1f})"):
-            st.write(f"**Pitch:** {idea.description}")
-            st.write(f"**Latest Critique:** {idea.critique}")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Feasibility", idea.score_feasibility)
-            col2.metric("Moat", idea.score_moat)
-            col3.metric("Market", idea.score_market)
+# CASE 2: LIVE GAME MODES
+else:
+    # Only run the game logic if we are NOT in history mode
+    if st.session_state.app_mode == "Spectator (AI vs AI)":
+        run_simulation_mode(niche_input)
+        
+    elif st.session_state.app_mode == "Gladiator (You vs AI)":
+        run_gladiator_mode(niche_input)

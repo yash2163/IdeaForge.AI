@@ -11,14 +11,15 @@ def init_db():
     c = conn.cursor()
     
     # Table 1: Sessions (The Battle Event)
+    # Added 'mode' column to track Spectator vs Gladiator
     c.execute('''CREATE TABLE IF NOT EXISTS sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     niche TEXT,
+                    mode TEXT, 
                     timestamp TEXT
                 )''')
     
     # Table 2: Ideas (The Output)
-    # We store the full object as a JSON string for flexibility
     c.execute('''CREATE TABLE IF NOT EXISTS ideas (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id INTEGER,
@@ -31,19 +32,25 @@ def init_db():
     conn.commit()
     conn.close()
 
-def save_battle(niche: str, ideas: list[BusinessIdea]):
-    """Save a finished battle and its ideas"""
+def save_battle(niche: str, ideas: list[BusinessIdea], mode: str = "Spectator"):
+    """Save a finished battle with its specific mode"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
+    # Check if 'mode' column exists (Migration logic for existing DBs)
+    try:
+        c.execute("SELECT mode FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        # If column doesn't exist, add it
+        c.execute("ALTER TABLE sessions ADD COLUMN mode TEXT")
+    
     # 1. Create Session
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute("INSERT INTO sessions (niche, timestamp) VALUES (?, ?)", (niche, timestamp))
+    c.execute("INSERT INTO sessions (niche, mode, timestamp) VALUES (?, ?, ?)", (niche, mode, timestamp))
     session_id = c.lastrowid
     
     # 2. Save Each Idea
     for idea in ideas:
-        # Convert Pydantic object to JSON string
         idea_json = idea.model_dump_json()
         c.execute('''INSERT INTO ideas (session_id, title, overall_score, full_data)
                      VALUES (?, ?, ?, ?)''', 
@@ -53,11 +60,18 @@ def save_battle(niche: str, ideas: list[BusinessIdea]):
     conn.close()
     return session_id
 
-def get_all_sessions():
-    """Get list of past battles for the sidebar"""
+def get_sessions_by_mode(mode_filter: str):
+    """Get battles filtered by their mode"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT id, niche, timestamp FROM sessions ORDER BY id DESC")
+    
+    # Migration check (in case DB is old)
+    try:
+        c.execute("SELECT mode FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        return [] # Return empty if DB structure isn't updated yet
+
+    c.execute("SELECT id, niche, timestamp FROM sessions WHERE mode = ? ORDER BY id DESC", (mode_filter,))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -70,7 +84,6 @@ def get_session_ideas(session_id):
     rows = c.fetchall()
     conn.close()
     
-    # Convert JSON strings back to Pydantic objects
     restored_ideas = []
     for row in rows:
         data = json.loads(row[0])
